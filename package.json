@@ -1,0 +1,17 @@
+{
+  "name": "farm-label-generator",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Generate printable plant labels with PDF and CSV export",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "pdfkit": "^0.15.0",
+    "qrcode": "^1.5.4",
+    "multer": "^1.4.5-lts.1",
+    "xlsx": "^0.18.5"
+  }
+}

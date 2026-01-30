@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Farm Label Generator</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Fraunces:wght@500;700&family=Space+Grotesk:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="app">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">Farm Label Generator</p>
+          <h1>Printable plant IDs, ready for the field.</h1>
+          <p class="subhead">
+            Enter your farm structure once. Export true-sized PDFs and matching CSVs for every plant.
+          </p>
+        </div>
+        <div class="hero-card">
+          <div class="hero-card__title">QR / Full ID Format</div>
+          <div id="formatPreview" class="hero-card__format">SITE-CROP-P01-R01-T001</div>
+          <div id="totalPreview" class="hero-card__meta">Total labels: 0</div>
+        </div>
+      </header>
+
+      <section class="panel">
+        <form id="labelForm" class="form-stack">
+          <div class="stage" id="stageA">
+            <div class="stage-header">
+              <h2>Basic setup</h2>
+              <p class="muted">Start with the essentials. You’ll define rows and plants in the next step.</p>
+            </div>
+            <div class="form-grid">
+              <div class="field">
+                <label for="siteName">Site Name</label>
+                <input id="siteName" name="siteName" type="text" placeholder="Terlabad" required />
+              </div>
+              <div class="field">
+                <label for="cropType">Crop Type</label>
+                <input id="cropType" name="cropType" type="text" placeholder="Marigold" required />
+              </div>
+              <div class="field">
+                <label for="batchName">Season / Batch Name</label>
+                <input id="batchName" name="batchName" type="text" placeholder="Rabi 2026" />
+              </div>
+              <div class="field">
+                <label for="startDate">Start Date</label>
+                <input id="startDate" name="startDate" type="date" />
+              </div>
+              <div class="field">
+                <label for="structureCode">Tracking Structure</label>
+                <select id="structureCode" name="structureCode">
+                  <option value="S1">S1 · Plot + Plant</option>
+                  <option value="S2">S2 · Plot + Row</option>
+                  <option value="S3" selected>S3 · Plot + Row + Plant</option>
+                  <option value="S4">S4 · Plot only</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="mode">Tracking Mode</label>
+                <select id="mode" name="mode">
+                  <option value="Standard" selected>Standard</option>
+                  <option value="Research">Research</option>
+                  <option value="Full">Full</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="inputMode">Input Mode</label>
+                <select id="inputMode" name="inputMode">
+                  <option value="manual" selected>Manual Entry</option>
+                  <option value="excel">Excel Import</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="plotsCount">Number of Plots</label>
+                <input id="plotsCount" name="plotsCount" type="number" min="1" step="1" value="1" required />
+              </div>
+            </div>
+            <div class="form-actions">
+              <button type="button" id="continueButton" class="primary">Continue</button>
+            </div>
+            <div id="setupMessages" class="form-messages"></div>
+          </div>
+
+          <div class="stage hidden" id="stageB">
+            <div class="stage-header">
+              <h2>Plot & row builder</h2>
+              <p class="muted">Adjust rows per plot and plant counts per row. Edit only the exceptions.</p>
+            </div>
+
+            <div class="import-panel hidden" id="importPanel">
+              <div class="stage-header">
+                <h3>Excel import</h3>
+                <p class="muted">Upload the ROWS sheet to define your farm layout.</p>
+              </div>
+              <div class="form-grid">
+                <div class="field">
+                  <label for="importFile">Upload Excel (ROWS sheet)</label>
+                  <input id="importFile" type="file" accept=".xlsx,.xls" />
+                </div>
+                <div class="field">
+                  <label>Template</label>
+                  <button type="button" id="downloadTemplate" class="ghost">Download template</button>
+                </div>
+                <div class="field">
+                  <label>Import</label>
+                  <button type="button" id="importButton" class="primary">Import Excel</button>
+                </div>
+              </div>
+              <div id="importMessages" class="form-messages"></div>
+              <div class="import-history" id="importHistory"></div>
+            </div>
+
+            <div class="defaults-panel">
+              <div class="field">
+                <label for="defaultRows">Default Rows per Plot</label>
+                <input id="defaultRows" type="number" min="1" step="1" value="3" />
+              </div>
+              <div class="field">
+                <label for="defaultPlants">Default Plants per Row</label>
+                <input id="defaultPlants" type="number" min="1" step="1" value="30" />
+              </div>
+              <div class="field hidden" id="defaultPlantsPerPlotField">
+                <label for="defaultPlantsPerPlot">Default Plants per Plot</label>
+                <input id="defaultPlantsPerPlot" type="number" min="1" step="1" value="100" />
+              </div>
+              <div class="field checkbox-field">
+                <label for="applyDefaults">
+                  <input id="applyDefaults" type="checkbox" checked />
+                  Apply to all plots
+                </label>
+              </div>
+              <div class="defaults-actions">
+                <button type="button" id="applyDefaultsButton" class="ghost">Apply defaults</button>
+                <button type="button" id="copyPlotButton" class="ghost">Copy Plot 1 layout to all</button>
+              </div>
+            </div>
+
+            <div id="plotsContainer" class="plots-container"></div>
+
+            <div class="sampling-panel hidden" id="samplingPanel">
+              <div class="stage-header">
+                <h3>Research sampling plan</h3>
+                <p class="muted">Generate a locked list of tracked plants for Research mode.</p>
+              </div>
+              <div class="form-grid">
+                <div class="field">
+                  <label for="samplingType">Sampling Type</label>
+                  <select id="samplingType">
+                    <option value="plot_based" selected>Plot based</option>
+                    <option value="row_based">Row based</option>
+                  </select>
+                </div>
+                <div class="field" id="samplesPerPlotField">
+                  <label for="samplesPerPlot">Samples per Plot (N)</label>
+                  <input id="samplesPerPlot" type="number" min="1" step="1" value="5" />
+                </div>
+                <div class="field hidden" id="samplesPerRowField">
+                  <label for="samplesPerRow">Samples per Row (N)</label>
+                  <input id="samplesPerRow" type="number" min="1" step="1" value="3" />
+                </div>
+                <div class="field hidden" id="samplingPlotsField">
+                  <label for="samplingPlots">Plots (e.g. 1-3,5)</label>
+                  <input id="samplingPlots" type="text" placeholder="All plots" />
+                </div>
+                <div class="field hidden" id="samplingRowsField">
+                  <label for="samplingRows">Rows (e.g. 1-5,7)</label>
+                  <input id="samplingRows" type="text" placeholder="All rows" />
+                </div>
+                <div class="field">
+                  <label for="samplingSeed">Random Seed (optional)</label>
+                  <input id="samplingSeed" type="text" placeholder="Leave blank for auto" />
+                </div>
+              </div>
+              <div class="form-actions">
+                <button type="button" id="generateSamplingButton" class="ghost">Generate Sampling Plan</button>
+              </div>
+              <div id="samplingSummary" class="form-messages"></div>
+            </div>
+
+            <div class="stage-divider"></div>
+
+            <div class="form-grid">
+              <div class="field">
+                <label for="labelType">Label Type</label>
+                <select id="labelType" name="labelType">
+                  <option value="plant" selected>Plant Labels</option>
+                  <option value="row">Row Labels</option>
+                  <option value="plot">Plot Labels</option>
+                  <option value="all">All Labels</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="qrMode">QR Payload</label>
+                <select id="qrMode" name="qrMode">
+                  <option value="id" selected>Full ID (offline)</option>
+                  <option value="url">URL</option>
+                </select>
+              </div>
+              <div class="field hidden" id="qrBaseUrlField">
+                <label for="qrBaseUrl">QR Base URL</label>
+                <input id="qrBaseUrl" name="qrBaseUrl" type="url" placeholder="https://fgn.app" />
+              </div>
+              <div class="field">
+                <label for="layoutMode">Layout</label>
+                <select id="layoutMode" name="layoutMode">
+                  <option value="sheet">Sheet labels (A4/Letter)</option>
+                  <option value="single" selected>Single label (3 × 5 in)</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="paperPreset">Paper Size</label>
+                <select id="paperPreset" name="paperPreset">
+                  <option value="A4">A4</option>
+                  <option value="Letter">Letter</option>
+                  <option value="Label3x5">3 × 5 in Label</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="labelWidth">Label Width (mm)</label>
+                <input id="labelWidth" name="labelWidth" type="number" min="10" step="0.1" value="60" />
+              </div>
+              <div class="field">
+                <label for="labelHeight">Label Height (mm)</label>
+                <input id="labelHeight" name="labelHeight" type="number" min="10" step="0.1" value="30" />
+              </div>
+              <div class="field checkbox-field" id="includeQrField">
+                <label for="includeQr">
+                  <input id="includeQr" name="includeQr" type="checkbox" checked />
+                  Include QR codes (sheet mode)
+                </label>
+              </div>
+              <div class="field checkbox-field hidden" id="includeBackField">
+                <label for="includeBack">
+                  <input id="includeBack" name="includeBack" type="checkbox" checked />
+                  Include back side (3 × 5 in)
+                </label>
+              </div>
+              <div class="field">
+                <label for="exportPlot">Export Plot</label>
+                <select id="exportPlot" name="exportPlot">
+                  <option value="all">All plots</option>
+                </select>
+              </div>
+            </div>
+
+            <details class="advanced" id="advancedToggle">
+              <summary>Advanced layout controls</summary>
+              <div class="advanced-grid">
+                <div class="field">
+                  <label for="marginTop">Margin Top (mm)</label>
+                  <input id="marginTop" type="number" min="0" step="0.1" value="8" />
+                </div>
+                <div class="field">
+                  <label for="marginRight">Margin Right (mm)</label>
+                  <input id="marginRight" type="number" min="0" step="0.1" value="8" />
+                </div>
+                <div class="field">
+                  <label for="marginBottom">Margin Bottom (mm)</label>
+                  <input id="marginBottom" type="number" min="0" step="0.1" value="8" />
+                </div>
+                <div class="field">
+                  <label for="marginLeft">Margin Left (mm)</label>
+                  <input id="marginLeft" type="number" min="0" step="0.1" value="8" />
+                </div>
+                <div class="field">
+                  <label for="gapX">Column Gap (mm)</label>
+                  <input id="gapX" type="number" min="0" step="0.1" value="2" />
+                </div>
+                <div class="field">
+                  <label for="gapY">Row Gap (mm)</label>
+                  <input id="gapY" type="number" min="0" step="0.1" value="2" />
+                </div>
+                <div class="field">
+                  <label for="safeMargin">Safe Margin (mm)</label>
+                  <input id="safeMargin" type="number" min="0" step="0.1" value="6" />
+                </div>
+                <div class="field checkbox-field">
+                  <label for="includeBleed">
+                    <input id="includeBleed" type="checkbox" />
+                    Include 3 mm bleed
+                  </label>
+                </div>
+              </div>
+            </details>
+
+            <div class="form-actions">
+              <button type="button" id="previewButton" class="ghost">Generate Preview</button>
+              <button type="button" id="pdfButton" class="primary">Export PDF</button>
+              <button type="button" id="csvButton" class="ghost">Export CSV</button>
+            </div>
+            <div id="formMessages" class="form-messages"></div>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel preview" id="previewSection">
+        <div class="preview-header">
+          <div>
+            <h2>Live preview</h2>
+            <p class="muted">Sample labels from Plot 1, Row 1. Updates as you edit plots.</p>
+          </div>
+          <div class="counts">
+            <div>
+              <span class="label">Total Plots</span>
+              <span id="countPlots">-</span>
+            </div>
+            <div>
+              <span class="label">Total Rows</span>
+              <span id="countRows">-</span>
+            </div>
+            <div>
+              <span class="label">Total Plants</span>
+              <span id="countPlants">-</span>
+            </div>
+            <div>
+              <span class="label">Total Labels</span>
+              <span id="countTotal">-</span>
+            </div>
+          </div>
+        </div>
+        <div class="sample-grid" id="sampleGrid"></div>
+      </section>
+    </main>
+
+    <script src="app.js"></script>
+  </body>
+</html>

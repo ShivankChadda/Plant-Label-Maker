@@ -1,0 +1,281 @@
+[
+  {
+    "id": "plan_1769770459710",
+    "createdAt": "2026-01-30T10:54:19.710Z",
+    "siteName": "u",
+    "cropType": "u",
+    "batchName": "u",
+    "startDate": "2026-01-28",
+    "structureCode": "S3",
+    "mode": "Research",
+    "samplingType": "row_based",
+    "seed": "1769770459709",
+    "config": {
+      "samplingType": "row_based",
+      "samplesPerPlot": "5",
+      "samplesPerRow": "3",
+      "plots": "4",
+      "rows": "4",
+      "seed": ""
+    },
+    "trackedPlants": []
+  },
+  {
+    "id": "plan_1769770469580",
+    "createdAt": "2026-01-30T10:54:29.580Z",
+    "siteName": "u",
+    "cropType": "u",
+    "batchName": "u",
+    "startDate": "2026-01-28",
+    "structureCode": "S3",
+    "mode": "Research",
+    "samplingType": "row_based",
+    "seed": "1769770469580",
+    "config": {
+      "samplingType": "row_based",
+      "samplesPerPlot": "5",
+      "samplesPerRow": "3",
+      "plots": "4",
+      "rows": "2",
+      "seed": ""
+    },
+    "trackedPlants": []
+  },
+  {
+    "id": "plan_1769770470421",
+    "createdAt": "2026-01-30T10:54:30.421Z",
+    "siteName": "u",
+    "cropType": "u",
+    "batchName": "u",
+    "startDate": "2026-01-28",
+    "structureCode": "S3",
+    "mode": "Research",
+    "samplingType": "row_based",
+    "seed": "1769770470421",
+    "config": {
+      "samplingType": "row_based",
+      "samplesPerPlot": "5",
+      "samplesPerRow": "3",
+      "plots": "4",
+      "rows": "2",
+      "seed": ""
+    },
+    "trackedPlants": []
+  },
+  {
+    "id": "plan_1769770474681",
+    "createdAt": "2026-01-30T10:54:34.681Z",
+    "siteName": "u",
+    "cropType": "u",
+    "batchName": "u",
+    "startDate": "2026-01-28",
+    "structureCode": "S3",
+    "mode": "Research",
+    "samplingType": "row_based",
+    "seed": "1769770474680",
+    "config": {
+      "samplingType": "row_based",
+      "samplesPerPlot": "5",
+      "samplesPerRow": "3",
+      "plots": "1",
+      "rows": "2",
+      "seed": ""
+    },
+    "trackedPlants": [
+      {
+        "plot_no": 1,
+        "row_no": 2,
+        "plant_no": 16
+      },
+      {
+        "plot_no": 1,
+        "row_no": 2,
+        "plant_no": 10
+      },
+      {
+        "plot_no": 1,
+        "row_no": 2,
+        "plant_no": 12
+      }
+    ]
+  },
+  {
+    "id": "plan_1769778501158",
+    "createdAt": "2026-01-30T13:08:21.158Z",
+    "siteName": "Calicut",
+    "cropType": "Marigold",
+    "batchName": "Season 2026",
+    "startDate": "2026-01-01",
+    "structureCode": "S3",
+    "mode": "Research",
+    "samplingType": "row_based",
+    "seed": "1769778501158",
+    "config": {
+      "samplingType": "row_based",
+      "samplesPerPlot": "5",
+      "samplesPerRow": "3",
+      "plots": "1",
+      "rows": "2",
+      "seed": ""
+    },
+    "trackedPlants": [
+      {
+        "plot_no": 1,
+        "row_no": 2,
+        "plant_no": 8
+      },
+      {
+        "plot_no": 1,
+        "row_no": 2,
+        "plant_no": 17
+      },
+      {
+        "plot_no": 1,
+        "row_no": 2,
+        "plant_no": 6
+      }
+    ]
+  },
+  {
+    "id": "plan_1769778551636",
+    "createdAt": "2026-01-30T13:09:11.636Z",
+    "siteName": "Calicut",
+    "cropType": "Marigold",
+    "batchName": "Season 2026",
+    "startDate": "2026-01-01",
+    "structureCode": "S3",
+    "mode": "Research",
+    "samplingType": "row_based",
+    "seed": "1769778551636",
+    "config": {
+      "samplingType": "row_based",
+      "samplesPerPlot": "5",
+      "samplesPerRow": "8",
+      "plots": "2",
+      "rows": "1-3",
+      "seed": ""
+    },
+    "trackedPlants": [
+      {
+        "plot_no": 2,
+        "row_no": 1,
+        "plant_no": 6
+      },
+      {
+        "plot_no": 2,
+        "row_no": 1,
+        "plant_no": 29
+      },
+      {
+        "plot_no": 2,
+        "row_no": 1,
+        "plant_no": 2
+      },
+      {
+        "plot_no": 2,
+        "row_no": 1,
+        "plant_no": 28
+      },
+      {
+        "plot_no": 2,
+        "row_no": 1,
+        "plant_no": 30
+      },
+      {
+        "plot_no": 2,
+        "row_no": 1,
+        "plant_no": 16
+      },
+      {
+        "plot_no": 2,
+        "row_no": 1,
+        "plant_no": 27
+      },
+      {
+        "plot_no": 2,
+        "row_no": 1,
+        "plant_no": 12
+      },
+      {
+        "plot_no": 2,
+        "row_no": 2,
+        "plant_no": 29
+      },
+      {
+        "plot_no": 2,
+        "row_no": 2,
+        "plant_no": 8
+      },
+      {
+        "plot_no": 2,
+        "row_no": 2,
+        "plant_no": 17
+      },
+      {
+        "plot_no": 2,
+        "row_no": 2,
+        "plant_no": 23
+      },
+      {
+        "plot_no": 2,
+        "row_no": 2,
+        "plant_no": 5
+      },
+      {
+        "plot_no": 2,
+        "row_no": 2,
+        "plant_no": 26
+      },
+      {
+        "plot_no": 2,
+        "row_no": 2,
+        "plant_no": 21
+      },
+      {
+        "plot_no": 2,
+        "row_no": 2,
+        "plant_no": 15
+      },
+      {
+        "plot_no": 2,
+        "row_no": 3,
+        "plant_no": 1
+      },
+      {
+        "plot_no": 2,
+        "row_no": 3,
+        "plant_no": 21
+      },
+      {
+        "plot_no": 2,
+        "row_no": 3,
+        "plant_no": 16
+      },
+      {
+        "plot_no": 2,
+        "row_no": 3,
+        "plant_no": 24
+      },
+      {
+        "plot_no": 2,
+        "row_no": 3,
+        "plant_no": 9
+      },
+      {
+        "plot_no": 2,
+        "row_no": 3,
+        "plant_no": 5
+      },
+      {
+        "plot_no": 2,
+        "row_no": 3,
+        "plant_no": 14
+      },
+      {
+        "plot_no": 2,
+        "row_no": 3,
+        "plant_no": 18
+      }
+    ]
+  }
+]
