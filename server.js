@@ -36,7 +36,7 @@ const DEFAULT_LAYOUT = {
 };
 
 const DEFAULT_QR = {
-  mode: 'id',
+  mode: 'url',
   baseUrl: 'https://fgn.app'
 };
 
@@ -187,6 +187,7 @@ async function persistExportToDb({ values, trackedPlants, samplingPlanId, includ
 
   const plotIdMap = new Map();
   const rowIdMap = new Map();
+  const plantIdMap = new Map();
 
   await db.query('BEGIN');
   try {
@@ -251,12 +252,12 @@ async function persistExportToDb({ values, trackedPlants, samplingPlanId, includ
     if (includePlants && structure.hasPlants) {
       const reason = values.mode === MODES.RESEARCH ? 'sample' : values.mode === MODES.FULL ? 'full' : null;
       const plantRows = values.mode === MODES.RESEARCH
-        ? trackedPlants || []
-        : Array.from(iterateLabels({
+        ? (trackedPlants || [])
+        : iterateLabels({
           ...values,
           structureCode: values.structureCode,
           plots: values.plots
-        }));
+        });
 
       for (const plant of plantRows) {
         const plotNo = parsePositiveInt(plant.plot_no ?? plant.plotNo ?? plant.plot);
@@ -266,7 +267,7 @@ async function persistExportToDb({ values, trackedPlants, samplingPlanId, includ
         const plotId = plotIdMap.get(plotNo);
         if (!plotId) continue;
         const rowId = rowNo ? rowIdMap.get(`${plotNo}-${rowNo}`) : null;
-        await db.query(
+        const plantResult = await db.query(
           `INSERT INTO plants (plot_id, row_id, plant_no, tracking_reason, sampling_plan_id)
            VALUES ($1, $2, $3, $4, $5)
            ON CONFLICT (plot_id, row_id, plant_no)
@@ -274,11 +275,20 @@ async function persistExportToDb({ values, trackedPlants, samplingPlanId, includ
            RETURNING id`,
           [plotId, rowId, plantNo, reason, samplingPlanId || null]
         );
+        if (plantResult.rows.length) {
+          const key = `${plotNo}-${rowNo || 0}-${plantNo}`;
+          plantIdMap.set(key, plantResult.rows[0].id);
+        }
       }
     }
 
     await db.query('COMMIT');
-    return { batchId: batchResult.rows[0].id };
+    return {
+      batchId: batchResult.rows[0].id,
+      plotIdMap,
+      rowIdMap,
+      plantIdMap
+    };
   } catch (error) {
     try {
       await db.query('ROLLBACK');
@@ -760,6 +770,95 @@ function formatMonthYear(date) {
   return date.toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
 }
 
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function renderEventsSection(entityType, entityId, events) {
+  const items = (events || []).map((event) => {
+    const when = new Date(event.created_at).toLocaleString('en-US');
+    const payload = event.payload && typeof event.payload === 'object' ? event.payload : null;
+    const note = payload && payload.note ? payload.note : null;
+    const extra = note ? note : payload ? JSON.stringify(payload) : '';
+    return `
+      <div class="event">
+        <div class="event-meta">${escapeHtml(when)}</div>
+        <div class="event-type">${escapeHtml(event.event_type)}</div>
+        ${extra ? `<div class="event-note">${escapeHtml(extra)}</div>` : ''}
+      </div>
+    `;
+  }).join('');
+
+  const listHtml = items || '<div class="empty">No events yet.</div>';
+
+  return `
+    <div class="section">
+      <h2>Log event</h2>
+      <form id="eventForm" data-entity-type="${escapeHtml(entityType)}" data-entity-id="${escapeHtml(entityId)}">
+        <div class="form-row">
+          <select name="eventType" required>
+            <option value="">Select event</option>
+            <option value="irrigation">Irrigation</option>
+            <option value="spray">Spray</option>
+            <option value="harvest">Harvest</option>
+            <option value="observation">Observation</option>
+            <option value="note">Note</option>
+          </select>
+          <input type="text" name="note" placeholder="Optional notes" />
+          <button type="submit">Save</button>
+        </div>
+      </form>
+      <div id="eventStatus" class="status"></div>
+    </div>
+    <div class="section">
+      <h2>History</h2>
+      <div class="events">
+        ${listHtml}
+      </div>
+    </div>
+    <script>
+      (() => {
+        const form = document.getElementById('eventForm');
+        const status = document.getElementById('eventStatus');
+        if (!form) return;
+        form.addEventListener('submit', async (event) => {
+          event.preventDefault();
+          const formData = new FormData(form);
+          const eventType = formData.get('eventType');
+          const note = formData.get('note');
+          status.textContent = 'Saving...';
+          try {
+            const response = await fetch('/api/events', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                entityType: form.dataset.entityType,
+                entityId: Number(form.dataset.entityId),
+                eventType,
+                payload: note ? { note } : null
+              })
+            });
+            if (!response.ok) {
+              const data = await response.json();
+              status.textContent = data.errors ? data.errors.join(', ') : 'Failed to save.';
+              return;
+            }
+            status.textContent = 'Saved.';
+            window.location.reload();
+          } catch (error) {
+            status.textContent = 'Failed to save.';
+          }
+        });
+      })();
+    </script>
+  `;
+}
+
 function drawDivider(doc, x1, x2, y) {
   doc.save();
   doc.strokeColor('#B0B0B0').lineWidth(0.5);
@@ -767,10 +866,29 @@ function drawDivider(doc, x1, x2, y) {
   doc.restore();
 }
 
-function getQrPayload(fullId, body) {
+function getEntityIdFromMaps(entityType, record, dbResult) {
+  if (!dbResult || !dbResult.batchId) return null;
+  if (entityType === 'plot') {
+    return dbResult.plotIdMap?.get(record.plotNo) || null;
+  }
+  if (entityType === 'row') {
+    return dbResult.rowIdMap?.get(`${record.plotNo}-${record.rowNo}`) || null;
+  }
+  if (entityType === 'plant') {
+    const key = `${record.plotNo}-${record.rowNo || 0}-${record.plantNo}`;
+    return dbResult.plantIdMap?.get(key) || null;
+  }
+  return null;
+}
+
+function getQrPayload({ fullId, body, entityType, entityId }) {
   const mode = body.qrMode || DEFAULT_QR.mode;
   if (mode === 'url') {
     const baseUrl = String(body.qrBaseUrl || DEFAULT_QR.baseUrl).replace(/\/+$/, '');
+    if (entityId) {
+      const prefix = entityType === 'plot' ? 'p' : entityType === 'row' ? 'r' : 't';
+      return `${baseUrl}/${prefix}/${entityId}`;
+    }
     return `${baseUrl}/farm/${fullId}`;
   }
   return fullId;
@@ -1482,7 +1600,13 @@ app.post('/api/pdf', async (req, res) => {
             : type === 'row'
               ? record.rowIdFull
               : record.plantIdFull;
-          const qrPayload = getQrPayload(fullId, req.body || {});
+          const entityId = getEntityIdFromMaps(type, record, dbResult);
+          const qrPayload = getQrPayload({
+            fullId,
+            body: req.body || {},
+            entityType: type,
+            entityId
+          });
 
           doc.addPage();
           await drawBackLabel(doc, fullId, qrPayload, {
@@ -1585,7 +1709,13 @@ app.post('/api/pdf', async (req, res) => {
       });
 
       if (canRenderQr) {
-        const qrDataUrl = await QRCode.toDataURL(getQrPayload(record.plantIdFull, req.body || {}), {
+        const entityId = getEntityIdFromMaps('plant', record, dbResult);
+        const qrDataUrl = await QRCode.toDataURL(getQrPayload({
+          fullId: record.plantIdFull,
+          body: req.body || {},
+          entityType: 'plant',
+          entityId
+        }), {
           margin: 0,
           width: 256,
           errorCorrectionLevel: 'M'
@@ -1940,6 +2070,17 @@ function renderPageShell(title, bodyHtml) {
     .value { font-size: 16px; font-weight: 600; }
     .actions { margin-top: 16px; display: flex; gap: 10px; flex-wrap: wrap; }
     button { border: none; border-radius: 999px; padding: 10px 16px; background: #f26b3a; color: #fff; font-size: 14px; }
+    .section { margin-top: 20px; }
+    .section h2 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.12em; color: #666; }
+    .form-row { display: flex; gap: 8px; flex-wrap: wrap; }
+    input, select { padding: 8px 10px; border: 1px solid #ddd; border-radius: 10px; font-size: 14px; }
+    .events { display: grid; gap: 10px; }
+    .event { padding: 10px; border: 1px solid #eee; border-radius: 12px; background: #fafafa; }
+    .event-meta { font-size: 12px; color: #666; }
+    .event-type { font-weight: 600; margin-top: 4px; }
+    .event-note { margin-top: 4px; font-size: 14px; color: #222; }
+    .status { margin-top: 6px; font-size: 12px; color: #2a6a4f; }
+    .empty { font-size: 13px; color: #777; }
   </style>
 </head>
 <body>
@@ -1965,6 +2106,10 @@ app.get('/p/:plotId', async (req, res) => {
     );
     if (!result.rows.length) return res.status(404).send('Plot not found.');
     const plot = result.rows[0];
+    const eventsResult = await db.query(
+      `SELECT * FROM events WHERE entity_type = $1 AND entity_id = $2 ORDER BY created_at DESC LIMIT 50`,
+      ['plot', plotId]
+    );
     const body = `
       <h1>Plot ${pad(plot.plot_no, 2)}</h1>
       <div class="meta">${plot.site_name} · ${plot.crop_type}</div>
@@ -1972,6 +2117,7 @@ app.get('/p/:plotId', async (req, res) => {
         <div><div class="label">Rows</div><div class="value">${plot.row_count}</div></div>
         <div><div class="label">Plants</div><div class="value">${plot.plant_count}</div></div>
       </div>
+      ${renderEventsSection('plot', plotId, eventsResult.rows)}
     `;
     res.send(renderPageShell(`Plot ${plot.plot_no}`, body));
   } catch (error) {
@@ -1995,12 +2141,17 @@ app.get('/r/:rowId', async (req, res) => {
     );
     if (!result.rows.length) return res.status(404).send('Row not found.');
     const row = result.rows[0];
+    const eventsResult = await db.query(
+      `SELECT * FROM events WHERE entity_type = $1 AND entity_id = $2 ORDER BY created_at DESC LIMIT 50`,
+      ['row', rowId]
+    );
     const body = `
       <h1>Row ${pad(row.row_no, 2)}</h1>
       <div class="meta">${row.site_name} · ${row.crop_type} · Plot ${pad(row.plot_no, 2)}</div>
       <div class="grid">
         <div><div class="label">Plants</div><div class="value">${row.plant_count}</div></div>
       </div>
+      ${renderEventsSection('row', rowId, eventsResult.rows)}
     `;
     res.send(renderPageShell(`Row ${row.row_no}`, body));
   } catch (error) {
@@ -2025,12 +2176,17 @@ app.get('/t/:plantId', async (req, res) => {
     );
     if (!result.rows.length) return res.status(404).send('Plant not found.');
     const plant = result.rows[0];
+    const eventsResult = await db.query(
+      `SELECT * FROM events WHERE entity_type = $1 AND entity_id = $2 ORDER BY created_at DESC LIMIT 50`,
+      ['plant', plantId]
+    );
     const body = `
       <h1>Plant ${pad(plant.plant_no, 3)}</h1>
       <div class="meta">${plant.site_name} · ${plant.crop_type} · Plot ${pad(plant.plot_no, 2)}${plant.row_no ? ` · Row ${pad(plant.row_no, 2)}` : ''}</div>
       <div class="grid">
         <div><div class="label">Tracking</div><div class="value">${plant.tracking_reason || 'N/A'}</div></div>
       </div>
+      ${renderEventsSection('plant', plantId, eventsResult.rows)}
     `;
     res.send(renderPageShell(`Plant ${plant.plant_no}`, body));
   } catch (error) {
