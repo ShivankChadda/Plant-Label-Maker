@@ -99,18 +99,16 @@ function coreDbAvailable() {
 function getPool() {
   if (!pool) {
     const connectionString = process.env.DATABASE_URL;
-    const wantsSsl = process.env.PGSSLMODE !== 'disable';
-    const ssl = wantsSsl ? { rejectUnauthorized: false } : undefined;
     pool = new Pool(
       connectionString
-        ? { connectionString, ssl }
+        ? { connectionString, ssl: { rejectUnauthorized: false } }
         : {
             host: process.env.PGHOST,
             port: process.env.PGPORT ? Number(process.env.PGPORT) : 5432,
             user: process.env.PGUSER,
             password: process.env.PGPASSWORD,
             database: process.env.PGDATABASE,
-            ssl
+            ssl: { rejectUnauthorized: false }
           }
     );
   }
