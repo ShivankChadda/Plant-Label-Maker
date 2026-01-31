@@ -15,9 +15,9 @@ app.use(express.json({ limit: '2mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
 
-initCoreDb().catch((error) => {
-  console.error('Core DB init failed:', error.message);
-});
+let dbReady = false;
+let coreDbReady = false;
+let pool = null;
 
 const PAPER_PRESETS = {
   A4: { widthMm: 210, heightMm: 297 },
@@ -58,9 +58,9 @@ const SAMPLING_FILE = path.join(DATA_DIR, 'sampling-plans.json');
 const IMPORTS_FILE = path.join(DATA_DIR, 'import-history.json');
 const CURRENT_IMPORT_FILE = path.join(DATA_DIR, 'current-import.json');
 
-let dbReady = false;
-let coreDbReady = false;
-let pool = null;
+initCoreDb().catch((error) => {
+  console.error('Core DB init failed:', error.message);
+});
 
 async function initDb() {
   if (dbReady || !process.env.POSTGRES_URL) return;
