@@ -176,6 +176,118 @@ async function initCoreDb() {
   coreDbReady = true;
 }
 
+async function persistExportToDb({ values, trackedPlants, samplingPlanId, includePlants }) {
+  if (!coreDbAvailable()) return { skipped: true };
+  await initCoreDb();
+  const db = getPool();
+  const structure = getStructure(values.structureCode);
+  const batchName = values.batchName ? String(values.batchName).trim() : null;
+  const startDate = values.startDate ? String(values.startDate).trim() : null;
+
+  const plotIdMap = new Map();
+  const rowIdMap = new Map();
+
+  await db.query('BEGIN');
+  try {
+    const batchResult = await db.query(
+      `INSERT INTO batches (site_name, crop_type, batch_name, start_date, structure_code, mode)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING id`,
+      [
+        values.siteName,
+        values.cropType,
+        batchName || null,
+        startDate || null,
+        values.structureCode,
+        values.mode
+      ]
+    );
+    const batchId = batchResult.rows[0].id;
+
+    for (const plot of values.plots) {
+      const plotNo = plot.plotNo;
+      let rowCount = 0;
+      let plantCount = 0;
+
+      if (!structure.hasRows && structure.hasPlants) {
+        plantCount = parsePositiveInt(plot.plantCount) || 0;
+      }
+
+      if (structure.hasRows) {
+        const rows = Array.isArray(plot.rows) ? plot.rows : [];
+        rowCount = rows.length;
+        rows.forEach((row) => {
+          plantCount += parsePositiveInt(row.plantCount) || 0;
+        });
+      }
+
+      const plotResult = await db.query(
+        `INSERT INTO plots (batch_id, plot_no, row_count, plant_count)
+         VALUES ($1, $2, $3, $4)
+         RETURNING id`,
+        [batchId, plotNo, rowCount, plantCount]
+      );
+      const plotId = plotResult.rows[0].id;
+      plotIdMap.set(plotNo, plotId);
+
+      if (structure.hasRows) {
+        const rows = Array.isArray(plot.rows) ? plot.rows : [];
+        for (const row of rows) {
+          const rowNo = parsePositiveInt(row.rowNo) || 0;
+          if (!rowNo) continue;
+          const rowPlantCount = parsePositiveInt(row.plantCount) || 0;
+          const rowResult = await db.query(
+            `INSERT INTO rows (plot_id, row_no, plant_count)
+             VALUES ($1, $2, $3)
+             RETURNING id`,
+            [plotId, rowNo, rowPlantCount]
+          );
+          rowIdMap.set(`${plotNo}-${rowNo}`, rowResult.rows[0].id);
+        }
+      }
+    }
+
+    if (includePlants && structure.hasPlants) {
+      const reason = values.mode === MODES.RESEARCH ? 'sample' : values.mode === MODES.FULL ? 'full' : null;
+      const plantRows = values.mode === MODES.RESEARCH
+        ? trackedPlants || []
+        : Array.from(iterateLabels({
+          ...values,
+          structureCode: values.structureCode,
+          plots: values.plots
+        }));
+
+      for (const plant of plantRows) {
+        const plotNo = parsePositiveInt(plant.plot_no ?? plant.plotNo ?? plant.plot);
+        const rowNo = parsePositiveInt(plant.row_no ?? plant.rowNo ?? plant.row);
+        const plantNo = parsePositiveInt(plant.plant_no ?? plant.plantNo ?? plant.plant);
+        if (!plotNo || !plantNo) continue;
+        const plotId = plotIdMap.get(plotNo);
+        if (!plotId) continue;
+        const rowId = rowNo ? rowIdMap.get(`${plotNo}-${rowNo}`) : null;
+        await db.query(
+          `INSERT INTO plants (plot_id, row_id, plant_no, tracking_reason, sampling_plan_id)
+           VALUES ($1, $2, $3, $4, $5)
+           ON CONFLICT (plot_id, row_id, plant_no)
+           DO UPDATE SET tracking_reason = plants.tracking_reason
+           RETURNING id`,
+          [plotId, rowId, plantNo, reason, samplingPlanId || null]
+        );
+      }
+    }
+
+    await db.query('COMMIT');
+    return { batchId: batchResult.rows[0].id };
+  } catch (error) {
+    try {
+      await db.query('ROLLBACK');
+    } catch (rollbackError) {
+      // ignore rollback errors
+    }
+    throw error;
+  }
+}
+
 function mmToPt(mm) {
   return (mm * 72) / 25.4;
 }
@@ -1278,6 +1390,30 @@ app.post('/api/pdf', async (req, res) => {
   if (layout.layoutMode === 'sheet' && labelType !== 'plant') {
     return res.status(400).json({ errors: ['Sheet mode is only supported for plant labels.'], warnings: [] });
   }
+
+  const labelTypes = labelType === 'all' ? ['plot', 'row', 'plant'] : [labelType];
+  const allowedLabelTypes = labelTypes.filter((type) => {
+    if (type === 'row') return structure.hasRows;
+    if (type === 'plant') return hasPlantTracking(validation.values.structureCode, validation.values.mode);
+    return true;
+  });
+  const includePlants = allowedLabelTypes.includes('plant');
+  const trackedPlants = Array.isArray(req.body.trackedPlants) ? req.body.trackedPlants : null;
+  if (includePlants && validation.values.mode === MODES.RESEARCH && (!trackedPlants || trackedPlants.length === 0)) {
+    return res.status(400).json({ errors: ['Generate a sampling plan before exporting plant labels.'], warnings: [] });
+  }
+
+  try {
+    await persistExportToDb({
+      values: validation.values,
+      trackedPlants,
+      samplingPlanId: req.body.samplingPlanId,
+      includePlants
+    });
+  } catch (error) {
+    return res.status(500).json({ errors: ['Failed to save records before export.'], warnings: [] });
+  }
+
   if (layout.layoutMode === 'single') {
     if (layout.safeMarginMm < 0) {
       return res.status(400).json({ errors: ['Safe margin cannot be negative.'], warnings: [] });
@@ -1296,19 +1432,7 @@ app.post('/api/pdf', async (req, res) => {
 
     let index = 0;
     try {
-      const trackedPlants = Array.isArray(req.body.trackedPlants) ? req.body.trackedPlants : null;
-      if (labelType === 'plant' && validation.values.mode === MODES.RESEARCH && (!trackedPlants || trackedPlants.length === 0)) {
-        return res.status(400).json({ errors: ['Generate a sampling plan before exporting plant labels.'], warnings: [] });
-      }
-
-      const labelTypes = labelType === 'all'
-        ? ['plot', 'row', 'plant']
-        : [labelType];
-
-      for (const type of labelTypes) {
-        if (type === 'row' && !structure.hasRows) continue;
-        if (type === 'plant' && !hasPlantTracking(validation.values.structureCode, validation.values.mode)) continue;
-
+      for (const type of allowedLabelTypes) {
         const iterator = type === 'plot'
           ? iteratePlots({ ...validation.values, exportPlot })
           : type === 'row'
@@ -1407,10 +1531,6 @@ app.post('/api/pdf', async (req, res) => {
   const labelsPerPage = columns * rows;
   const includeQr = Boolean(req.body.includeQr);
   const dateText = new Date().toLocaleDateString('en-CA');
-  const trackedPlants = Array.isArray(req.body.trackedPlants) ? req.body.trackedPlants : null;
-  if (validation.values.mode === MODES.RESEARCH && (!trackedPlants || trackedPlants.length === 0)) {
-    return res.status(400).json({ errors: ['Generate a sampling plan before exporting plant labels.'], warnings: [] });
-  }
 
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Disposition', 'attachment; filename="farm-plant-labels.pdf"');
