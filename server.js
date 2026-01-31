@@ -104,8 +104,10 @@ function coreDbAvailable() {
 
 function getPool() {
   if (!pool) {
+    const rawUrl = process.env.DATABASE_URL;
+    const connectionString = rawUrl ? rawUrl.replace(/([?&])sslmode=[^&]+/i, '$1').replace(/[?&]$/, '') : rawUrl;
     pool = new Pool({
-      connectionString: process.env.DATABASE_URL,
+      connectionString,
       ssl: { rejectUnauthorized: false }
     });
   }
