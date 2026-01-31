@@ -99,15 +99,18 @@ function coreDbAvailable() {
 function getPool() {
   if (!pool) {
     const connectionString = process.env.DATABASE_URL;
+    const wantsSsl = process.env.PGSSLMODE !== 'disable';
+    const ssl = wantsSsl ? { rejectUnauthorized: false } : undefined;
     pool = new Pool(
       connectionString
-        ? { connectionString }
+        ? { connectionString, ssl }
         : {
             host: process.env.PGHOST,
             port: process.env.PGPORT ? Number(process.env.PGPORT) : 5432,
             user: process.env.PGUSER,
             password: process.env.PGPASSWORD,
-            database: process.env.PGDATABASE
+            database: process.env.PGDATABASE,
+            ssl
           }
     );
   }
@@ -1403,8 +1406,9 @@ app.post('/api/pdf', async (req, res) => {
     return res.status(400).json({ errors: ['Generate a sampling plan before exporting plant labels.'], warnings: [] });
   }
 
+  let dbResult = null;
   try {
-    await persistExportToDb({
+    dbResult = await persistExportToDb({
       values: validation.values,
       trackedPlants,
       samplingPlanId: req.body.samplingPlanId,
@@ -1412,6 +1416,12 @@ app.post('/api/pdf', async (req, res) => {
     });
   } catch (error) {
     return res.status(500).json({ errors: ['Failed to save records before export.'], warnings: [] });
+  }
+
+  const dbSaved = Boolean(dbResult && dbResult.batchId);
+  res.setHeader('X-DB-Saved', dbSaved ? 'yes' : 'no');
+  if (dbSaved) {
+    res.setHeader('X-Batch-Id', String(dbResult.batchId));
   }
 
   if (layout.layoutMode === 'single') {

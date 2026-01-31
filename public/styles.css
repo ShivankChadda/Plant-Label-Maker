@@ -361,6 +361,12 @@ button:disabled {
   white-space: pre-line;
 }
 
+.export-status {
+  grid-column: 1 / -1;
+  font-size: 13px;
+  white-space: pre-line;
+}
+
 .hidden {
   display: none !important;
 }

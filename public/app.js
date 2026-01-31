@@ -10,6 +10,7 @@ const formatPreview = document.getElementById('formatPreview');
 const totalPreview = document.getElementById('totalPreview');
 const sampleGrid = document.getElementById('sampleGrid');
 const formMessages = document.getElementById('formMessages');
+const exportStatus = document.getElementById('exportStatus');
 const exportPlotSelect = document.getElementById('exportPlot');
 const labelTypeSelect = document.getElementById('labelType');
 const qrModeSelect = document.getElementById('qrMode');
@@ -838,6 +839,7 @@ async function exportFile(endpoint, fileName) {
   pdfButton.disabled = true;
   csvButton.disabled = true;
   formMessages.textContent = 'Preparing export...';
+  if (exportStatus) exportStatus.textContent = '';
 
   try {
     const response = await fetch(endpoint, {
@@ -855,6 +857,14 @@ async function exportFile(endpoint, fileName) {
         formMessages.textContent = responseText || 'Failed to export.';
       }
       return;
+    }
+
+    const dbSavedHeader = response.headers.get('x-db-saved');
+    const batchIdHeader = response.headers.get('x-batch-id');
+    if (exportStatus) {
+      const savedText = dbSavedHeader && dbSavedHeader.toLowerCase() === 'yes' ? 'Yes' : 'No';
+      const batchText = batchIdHeader ? batchIdHeader : '-';
+      exportStatus.textContent = `Saved to DB: ${savedText}\nBatch ID: ${batchText}`;
     }
 
     const blob = await response.blob();
