@@ -5,7 +5,6 @@ const PDFDocument = require('pdfkit');
 const QRCode = require('qrcode');
 const multer = require('multer');
 const XLSX = require('xlsx');
-const { sql } = require('@vercel/postgres');
 const { Pool } = require('pg');
 
 const app = express();
@@ -58,42 +57,49 @@ const SAMPLING_FILE = path.join(DATA_DIR, 'sampling-plans.json');
 const IMPORTS_FILE = path.join(DATA_DIR, 'import-history.json');
 const CURRENT_IMPORT_FILE = path.join(DATA_DIR, 'current-import.json');
 
-initCoreDb().catch((error) => {
-  console.error('Core DB init failed:', error.message);
+initCoreDb().catch(() => {
+  // initCoreDb already logs the failure
 });
 
 async function initDb() {
-  if (dbReady || !process.env.POSTGRES_URL) return;
-  await sql`
-    CREATE TABLE IF NOT EXISTS sampling_plans (
-      id TEXT PRIMARY KEY,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      data JSONB NOT NULL
-    );
-  `;
-  await sql`
-    CREATE TABLE IF NOT EXISTS import_history (
-      id TEXT PRIMARY KEY,
-      uploaded_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      data JSONB NOT NULL
-    );
-  `;
-  await sql`
-    CREATE TABLE IF NOT EXISTS current_import (
-      id TEXT PRIMARY KEY,
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      data JSONB NOT NULL
-    );
-  `;
-  dbReady = true;
+  if (dbReady || !coreDbAvailable()) return;
+  try {
+    const db = getPool();
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS sampling_plans (
+        id TEXT PRIMARY KEY,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        data JSONB NOT NULL
+      );
+    `);
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS import_history (
+        id TEXT PRIMARY KEY,
+        uploaded_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        data JSONB NOT NULL
+      );
+    `);
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS current_import (
+        id TEXT PRIMARY KEY,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        data JSONB NOT NULL
+      );
+    `);
+    dbReady = true;
+  } catch (error) {
+    dbReady = false;
+    console.error('Aux DB init failed:', error.message);
+    throw error;
+  }
 }
 
 function dbAvailable() {
-  return Boolean(process.env.POSTGRES_URL);
+  return Boolean(process.env.DATABASE_URL);
 }
 
 function coreDbAvailable() {
-  return Boolean(process.env.DATABASE_URL || process.env.PGHOST);
+  return Boolean(process.env.DATABASE_URL);
 }
 
 function getPool() {
@@ -108,69 +114,86 @@ function getPool() {
 
 async function initCoreDb() {
   if (coreDbReady || !coreDbAvailable()) return;
-  const db = getPool();
-  await db.query(`
-    CREATE TABLE IF NOT EXISTS batches (
-      id BIGSERIAL PRIMARY KEY,
-      site_name TEXT NOT NULL,
-      crop_type TEXT NOT NULL,
-      batch_name TEXT,
-      start_date DATE,
-      structure_code TEXT NOT NULL,
-      mode TEXT NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-  `);
-  await db.query(`
-    CREATE TABLE IF NOT EXISTS plots (
-      id BIGSERIAL PRIMARY KEY,
-      batch_id BIGINT NOT NULL REFERENCES batches(id) ON DELETE CASCADE,
-      plot_no INTEGER NOT NULL,
-      row_count INTEGER DEFAULT 0,
-      plant_count INTEGER DEFAULT 0,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      UNIQUE (batch_id, plot_no)
-    );
-  `);
-  await db.query(`
-    CREATE TABLE IF NOT EXISTS rows (
-      id BIGSERIAL PRIMARY KEY,
-      plot_id BIGINT NOT NULL REFERENCES plots(id) ON DELETE CASCADE,
-      row_no INTEGER NOT NULL,
-      plant_count INTEGER DEFAULT 0,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      UNIQUE (plot_id, row_no)
-    );
-  `);
-  await db.query(`
-    CREATE TABLE IF NOT EXISTS plants (
-      id BIGSERIAL PRIMARY KEY,
-      plot_id BIGINT NOT NULL REFERENCES plots(id) ON DELETE CASCADE,
-      row_id BIGINT REFERENCES rows(id) ON DELETE SET NULL,
-      plant_no INTEGER NOT NULL,
-      tracking_reason TEXT,
-      sampling_plan_id TEXT,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      UNIQUE (plot_id, row_id, plant_no)
-    );
-  `);
-  await db.query(`
-    CREATE TABLE IF NOT EXISTS events (
-      id BIGSERIAL PRIMARY KEY,
-      entity_type TEXT NOT NULL,
-      entity_id BIGINT NOT NULL,
-      event_type TEXT NOT NULL,
-      payload JSONB,
-      created_by TEXT,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-  `);
-  coreDbReady = true;
+  try {
+    const db = getPool();
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS batches (
+        id BIGSERIAL PRIMARY KEY,
+        site_name TEXT NOT NULL,
+        crop_type TEXT NOT NULL,
+        batch_name TEXT,
+        start_date DATE,
+        structure_code TEXT NOT NULL,
+        mode TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+    `);
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS plots (
+        id BIGSERIAL PRIMARY KEY,
+        batch_id BIGINT NOT NULL REFERENCES batches(id) ON DELETE CASCADE,
+        plot_no INTEGER NOT NULL,
+        row_count INTEGER DEFAULT 0,
+        plant_count INTEGER DEFAULT 0,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE (batch_id, plot_no)
+      );
+    `);
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS rows (
+        id BIGSERIAL PRIMARY KEY,
+        plot_id BIGINT NOT NULL REFERENCES plots(id) ON DELETE CASCADE,
+        row_no INTEGER NOT NULL,
+        plant_count INTEGER DEFAULT 0,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE (plot_id, row_no)
+      );
+    `);
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS plants (
+        id BIGSERIAL PRIMARY KEY,
+        plot_id BIGINT NOT NULL REFERENCES plots(id) ON DELETE CASCADE,
+        row_id BIGINT REFERENCES rows(id) ON DELETE SET NULL,
+        plant_no INTEGER NOT NULL,
+        tracking_reason TEXT,
+        sampling_plan_id TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE (plot_id, row_id, plant_no)
+      );
+    `);
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS events (
+        id BIGSERIAL PRIMARY KEY,
+        entity_type TEXT NOT NULL,
+        entity_id BIGINT NOT NULL,
+        event_type TEXT NOT NULL,
+        payload JSONB,
+        created_by TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+    `);
+    coreDbReady = true;
+  } catch (error) {
+    coreDbReady = false;
+    console.error('Core DB init failed:', error.message);
+    throw error;
+  }
+}
+
+async function ensureCoreDbReady() {
+  if (!coreDbAvailable()) {
+    throw new Error('Database not configured. Set DATABASE_URL.');
+  }
+  if (!coreDbReady) {
+    await initCoreDb();
+  }
+  if (!coreDbReady) {
+    throw new Error('Database initialization failed.');
+  }
 }
 
 async function persistExportToDb({ values, trackedPlants, samplingPlanId, includePlants }) {
-  if (!coreDbAvailable()) return { skipped: true };
-  await initCoreDb();
+  await ensureCoreDbReady();
   const db = getPool();
   const structure = getStructure(values.structureCode);
   const batchName = values.batchName ? String(values.batchName).trim() : null;
@@ -327,8 +350,9 @@ function ensureDataDir() {
 async function loadSamplingPlans() {
   if (dbAvailable()) {
     await initDb();
-    const { rows } = await sql`SELECT data FROM sampling_plans ORDER BY created_at DESC`;
-    return rows.map((row) => row.data);
+    const db = getPool();
+    const result = await db.query('SELECT data FROM sampling_plans ORDER BY created_at DESC');
+    return result.rows.map((row) => row.data);
   }
   try {
     if (!fs.existsSync(SAMPLING_FILE)) return [];
@@ -343,7 +367,11 @@ async function loadSamplingPlans() {
 async function saveSamplingPlan(plan) {
   if (dbAvailable()) {
     await initDb();
-    await sql`INSERT INTO sampling_plans (id, data) VALUES (${plan.id}, ${JSON.stringify(plan)}::jsonb)`;
+    const db = getPool();
+    await db.query(
+      'INSERT INTO sampling_plans (id, data) VALUES ($1, $2::jsonb)',
+      [plan.id, JSON.stringify(plan)]
+    );
     return;
   }
   ensureDataDir();
@@ -355,8 +383,9 @@ async function saveSamplingPlan(plan) {
 async function loadImportHistory() {
   if (dbAvailable()) {
     await initDb();
-    const { rows } = await sql`SELECT data FROM import_history ORDER BY uploaded_at DESC LIMIT 5`;
-    return rows.map((row) => row.data);
+    const db = getPool();
+    const result = await db.query('SELECT data FROM import_history ORDER BY uploaded_at DESC LIMIT 5');
+    return result.rows.map((row) => row.data);
   }
   try {
     if (!fs.existsSync(IMPORTS_FILE)) return [];
@@ -371,15 +400,19 @@ async function loadImportHistory() {
 async function saveImportHistory(record) {
   if (dbAvailable()) {
     await initDb();
-    await sql`INSERT INTO import_history (id, data) VALUES (${record.id}, ${JSON.stringify(record)}::jsonb)`;
-    await sql`
-      DELETE FROM import_history
-      WHERE id IN (
-        SELECT id FROM import_history
-        ORDER BY uploaded_at DESC
-        OFFSET 5
-      );
-    `;
+    const db = getPool();
+    await db.query(
+      'INSERT INTO import_history (id, data) VALUES ($1, $2::jsonb)',
+      [record.id, JSON.stringify(record)]
+    );
+    await db.query(
+      `DELETE FROM import_history
+       WHERE id IN (
+         SELECT id FROM import_history
+         ORDER BY uploaded_at DESC
+         OFFSET 5
+       );`
+    );
     return;
   }
   ensureDataDir();
@@ -392,11 +425,13 @@ async function saveImportHistory(record) {
 async function saveCurrentImport(data) {
   if (dbAvailable()) {
     await initDb();
-    await sql`
-      INSERT INTO current_import (id, data, updated_at)
-      VALUES ('current', ${JSON.stringify(data)}::jsonb, NOW())
-      ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW();
-    `;
+    const db = getPool();
+    await db.query(
+      `INSERT INTO current_import (id, data, updated_at)
+       VALUES ('current', $1::jsonb, NOW())
+       ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW();`,
+      [JSON.stringify(data)]
+    );
     return;
   }
   ensureDataDir();
@@ -1411,14 +1446,19 @@ app.post('/api/import', upload.single('file'), async (req, res) => {
     cropType: parsed.data.cropType,
     counts: parsed.counts
   };
-  await saveImportHistory(record);
-  await saveCurrentImport({
-    ...parsed.data,
-    structureCode: 'S3',
-    mode: MODES.STANDARD,
-    importId,
-    uploadedAt: record.uploadedAt
-  });
+  try {
+    await saveImportHistory(record);
+    await saveCurrentImport({
+      ...parsed.data,
+      structureCode: 'S3',
+      mode: MODES.STANDARD,
+      importId,
+      uploadedAt: record.uploadedAt
+    });
+  } catch (error) {
+    console.error('DB error:', error.message);
+    return res.status(500).json({ errors: ['Database connection failed. Check DATABASE_URL.'], warnings: [] });
+  }
 
   res.json({
     importId,
@@ -1522,7 +1562,8 @@ app.post('/api/pdf', async (req, res) => {
       includePlants
     });
   } catch (error) {
-    return res.status(500).json({ errors: ['Failed to save records before export.'], warnings: [] });
+    console.error('DB error:', error.message);
+    return res.status(500).json({ errors: ['Database connection failed. Check DATABASE_URL.'], warnings: [] });
   }
 
   const dbSaved = Boolean(dbResult && dbResult.batchId);
@@ -1731,9 +1772,6 @@ app.get('/api/presets', (_req, res) => {
 });
 
 app.post('/api/batches', async (req, res) => {
-  if (!coreDbAvailable()) {
-    return res.status(400).json({ errors: ['Database is not configured.'], warnings: [] });
-  }
   const siteName = String(req.body.siteName || '').trim();
   const cropType = String(req.body.cropType || '').trim();
   const batchName = String(req.body.batchName || '').trim();
@@ -1749,7 +1787,7 @@ app.post('/api/batches', async (req, res) => {
   if (errors.length) return res.status(400).json({ errors, warnings: [] });
 
   try {
-    await initCoreDb();
+    await ensureCoreDbReady();
     const db = getPool();
     const result = await db.query(
       `INSERT INTO batches (site_name, crop_type, batch_name, start_date, structure_code, mode)
@@ -1759,30 +1797,26 @@ app.post('/api/batches', async (req, res) => {
     );
     res.json({ batch: result.rows[0] });
   } catch (error) {
-    res.status(500).json({ errors: ['Failed to create batch.'], warnings: [] });
+    console.error('DB error:', error.message);
+    res.status(500).json({ errors: ['Database connection failed. Check DATABASE_URL.'], warnings: [] });
   }
 });
 
 app.get('/api/batches', async (_req, res) => {
-  if (!coreDbAvailable()) {
-    return res.json({ batches: [] });
-  }
   try {
-    await initCoreDb();
+    await ensureCoreDbReady();
     const db = getPool();
     const { rows } = await db.query('SELECT * FROM batches ORDER BY created_at DESC');
     res.json({ batches: rows });
   } catch (error) {
-    res.status(500).json({ errors: ['Failed to load batches.'], warnings: [] });
+    console.error('DB error:', error.message);
+    res.status(500).json({ errors: ['Database connection failed. Check DATABASE_URL.'], warnings: [] });
   }
 });
 
 app.get('/api/batches/:id', async (req, res) => {
-  if (!coreDbAvailable()) {
-    return res.status(400).json({ errors: ['Database is not configured.'], warnings: [] });
-  }
   try {
-    await initCoreDb();
+    await ensureCoreDbReady();
     const db = getPool();
     const batchId = Number(req.params.id);
     const batchResult = await db.query('SELECT * FROM batches WHERE id = $1', [batchId]);
@@ -1799,21 +1833,19 @@ app.get('/api/batches/:id', async (req, res) => {
     );
     res.json({ batch: batchResult.rows[0], plots: plots.rows, rows: rows.rows });
   } catch (error) {
-    res.status(500).json({ errors: ['Failed to load batch.'], warnings: [] });
+    console.error('DB error:', error.message);
+    res.status(500).json({ errors: ['Database connection failed. Check DATABASE_URL.'], warnings: [] });
   }
 });
 
 app.post('/api/batches/:id/structure', async (req, res) => {
-  if (!coreDbAvailable()) {
-    return res.status(400).json({ errors: ['Database is not configured.'], warnings: [] });
-  }
   const batchId = Number(req.params.id);
   const plots = Array.isArray(req.body.plots) ? req.body.plots : [];
   if (!plots.length) {
     return res.status(400).json({ errors: ['Plots are required.'], warnings: [] });
   }
   try {
-    await initCoreDb();
+    await ensureCoreDbReady();
     const db = getPool();
     const batchResult = await db.query('SELECT * FROM batches WHERE id = $1', [batchId]);
     if (!batchResult.rows.length) {
@@ -1875,21 +1907,19 @@ app.post('/api/batches/:id/structure', async (req, res) => {
     } catch (rollbackError) {
       // ignore rollback errors
     }
-    res.status(500).json({ errors: ['Failed to save structure.'], warnings: [] });
+    console.error('DB error:', error.message);
+    res.status(500).json({ errors: ['Database connection failed. Check DATABASE_URL.'], warnings: [] });
   }
 });
 
 app.post('/api/batches/:id/plants', async (req, res) => {
-  if (!coreDbAvailable()) {
-    return res.status(400).json({ errors: ['Database is not configured.'], warnings: [] });
-  }
   const batchId = Number(req.params.id);
   const plants = Array.isArray(req.body.plants) ? req.body.plants : [];
   if (!plants.length) {
     return res.status(400).json({ errors: ['Plant list is required.'], warnings: [] });
   }
   try {
-    await initCoreDb();
+    await ensureCoreDbReady();
     const db = getPool();
     const plots = await db.query('SELECT id, plot_no FROM plots WHERE batch_id = $1', [batchId]);
     const plotMap = new Map(plots.rows.map((plot) => [plot.plot_no, plot.id]));
@@ -1927,14 +1957,14 @@ app.post('/api/batches/:id/plants', async (req, res) => {
     } catch (rollbackError) {
       // ignore
     }
-    res.status(500).json({ errors: ['Failed to save plants.'], warnings: [] });
+    console.error('DB error:', error.message);
+    res.status(500).json({ errors: ['Database connection failed. Check DATABASE_URL.'], warnings: [] });
   }
 });
 
 app.get('/api/plot/:id', async (req, res) => {
-  if (!coreDbAvailable()) return res.status(400).json({ errors: ['Database not configured.'], warnings: [] });
   try {
-    await initCoreDb();
+    await ensureCoreDbReady();
     const db = getPool();
     const plotId = Number(req.params.id);
     const result = await db.query(
@@ -1947,14 +1977,14 @@ app.get('/api/plot/:id', async (req, res) => {
     if (!result.rows.length) return res.status(404).json({ errors: ['Plot not found.'], warnings: [] });
     res.json({ plot: result.rows[0] });
   } catch (error) {
-    res.status(500).json({ errors: ['Failed to load plot.'], warnings: [] });
+    console.error('DB error:', error.message);
+    res.status(500).json({ errors: ['Database connection failed. Check DATABASE_URL.'], warnings: [] });
   }
 });
 
 app.get('/api/row/:id', async (req, res) => {
-  if (!coreDbAvailable()) return res.status(400).json({ errors: ['Database not configured.'], warnings: [] });
   try {
-    await initCoreDb();
+    await ensureCoreDbReady();
     const db = getPool();
     const rowId = Number(req.params.id);
     const result = await db.query(
@@ -1968,14 +1998,14 @@ app.get('/api/row/:id', async (req, res) => {
     if (!result.rows.length) return res.status(404).json({ errors: ['Row not found.'], warnings: [] });
     res.json({ row: result.rows[0] });
   } catch (error) {
-    res.status(500).json({ errors: ['Failed to load row.'], warnings: [] });
+    console.error('DB error:', error.message);
+    res.status(500).json({ errors: ['Database connection failed. Check DATABASE_URL.'], warnings: [] });
   }
 });
 
 app.get('/api/plant/:id', async (req, res) => {
-  if (!coreDbAvailable()) return res.status(400).json({ errors: ['Database not configured.'], warnings: [] });
   try {
-    await initCoreDb();
+    await ensureCoreDbReady();
     const db = getPool();
     const plantId = Number(req.params.id);
     const result = await db.query(
@@ -1990,12 +2020,12 @@ app.get('/api/plant/:id', async (req, res) => {
     if (!result.rows.length) return res.status(404).json({ errors: ['Plant not found.'], warnings: [] });
     res.json({ plant: result.rows[0] });
   } catch (error) {
-    res.status(500).json({ errors: ['Failed to load plant.'], warnings: [] });
+    console.error('DB error:', error.message);
+    res.status(500).json({ errors: ['Database connection failed. Check DATABASE_URL.'], warnings: [] });
   }
 });
 
 app.post('/api/events', async (req, res) => {
-  if (!coreDbAvailable()) return res.status(400).json({ errors: ['Database not configured.'], warnings: [] });
   const entityType = String(req.body.entityType || '').toLowerCase();
   const entityId = Number(req.body.entityId);
   const eventType = String(req.body.eventType || '').trim();
@@ -2008,7 +2038,7 @@ app.post('/api/events', async (req, res) => {
     return res.status(400).json({ errors: ['entityId and eventType are required.'], warnings: [] });
   }
   try {
-    await initCoreDb();
+    await ensureCoreDbReady();
     const db = getPool();
     const result = await db.query(
       `INSERT INTO events (entity_type, entity_id, event_type, payload, created_by)
@@ -2018,19 +2048,19 @@ app.post('/api/events', async (req, res) => {
     );
     res.json({ event: result.rows[0] });
   } catch (error) {
-    res.status(500).json({ errors: ['Failed to log event.'], warnings: [] });
+    console.error('DB error:', error.message);
+    res.status(500).json({ errors: ['Database connection failed. Check DATABASE_URL.'], warnings: [] });
   }
 });
 
 app.get('/api/events', async (req, res) => {
-  if (!coreDbAvailable()) return res.status(400).json({ errors: ['Database not configured.'], warnings: [] });
   const entityType = String(req.query.entity_type || '').toLowerCase();
   const entityId = Number(req.query.entity_id);
   if (!entityType || !entityId) {
     return res.status(400).json({ errors: ['entity_type and entity_id are required.'], warnings: [] });
   }
   try {
-    await initCoreDb();
+    await ensureCoreDbReady();
     const db = getPool();
     const result = await db.query(
       `SELECT * FROM events
@@ -2040,7 +2070,8 @@ app.get('/api/events', async (req, res) => {
     );
     res.json({ events: result.rows });
   } catch (error) {
-    res.status(500).json({ errors: ['Failed to load events.'], warnings: [] });
+    console.error('DB error:', error.message);
+    res.status(500).json({ errors: ['Database connection failed. Check DATABASE_URL.'], warnings: [] });
   }
 });
 
@@ -2083,9 +2114,8 @@ function renderPageShell(title, bodyHtml) {
 }
 
 app.get('/p/:plotId', async (req, res) => {
-  if (!coreDbAvailable()) return res.status(400).send('Database not configured.');
   try {
-    await initCoreDb();
+    await ensureCoreDbReady();
     const db = getPool();
     const plotId = Number(req.params.plotId);
     const result = await db.query(
@@ -2112,14 +2142,14 @@ app.get('/p/:plotId', async (req, res) => {
     `;
     res.send(renderPageShell(`Plot ${plot.plot_no}`, body));
   } catch (error) {
-    res.status(500).send('Failed to load plot.');
+    console.error('DB error:', error.message);
+    res.status(500).send('Database connection failed. Check DATABASE_URL.');
   }
 });
 
 app.get('/r/:rowId', async (req, res) => {
-  if (!coreDbAvailable()) return res.status(400).send('Database not configured.');
   try {
-    await initCoreDb();
+    await ensureCoreDbReady();
     const db = getPool();
     const rowId = Number(req.params.rowId);
     const result = await db.query(
@@ -2146,14 +2176,14 @@ app.get('/r/:rowId', async (req, res) => {
     `;
     res.send(renderPageShell(`Row ${row.row_no}`, body));
   } catch (error) {
-    res.status(500).send('Failed to load row.');
+    console.error('DB error:', error.message);
+    res.status(500).send('Database connection failed. Check DATABASE_URL.');
   }
 });
 
 app.get('/t/:plantId', async (req, res) => {
-  if (!coreDbAvailable()) return res.status(400).send('Database not configured.');
   try {
-    await initCoreDb();
+    await ensureCoreDbReady();
     const db = getPool();
     const plantId = Number(req.params.plantId);
     const result = await db.query(
@@ -2181,7 +2211,8 @@ app.get('/t/:plantId', async (req, res) => {
     `;
     res.send(renderPageShell(`Plant ${plant.plant_no}`, body));
   } catch (error) {
-    res.status(500).send('Failed to load plant.');
+    console.error('DB error:', error.message);
+    res.status(500).send('Database connection failed. Check DATABASE_URL.');
   }
 });
 
@@ -2213,7 +2244,12 @@ app.post('/api/sample', async (req, res) => {
       config: planConfig,
       trackedPlants: planResult.trackedPlants
     };
-    await saveSamplingPlan(planRecord);
+    try {
+      await saveSamplingPlan(planRecord);
+    } catch (dbError) {
+      console.error('DB error:', dbError.message);
+      return res.status(500).json({ errors: ['Database connection failed. Check DATABASE_URL.'], warnings: [] });
+    }
     res.json({
       samplingPlanId: planId,
       seed: planResult.seed,
