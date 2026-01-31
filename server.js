@@ -5,6 +5,8 @@ const PDFDocument = require('pdfkit');
 const QRCode = require('qrcode');
 const multer = require('multer');
 const XLSX = require('xlsx');
+const { sql } = require('@vercel/postgres');
+const { Pool } = require('pg');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -12,6 +14,10 @@ const PORT = process.env.PORT || 3000;
 app.use(express.json({ limit: '2mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
+
+initCoreDb().catch((error) => {
+  console.error('Core DB init failed:', error.message);
+});
 
 const PAPER_PRESETS = {
   A4: { widthMm: 210, heightMm: 297 },
@@ -47,10 +53,128 @@ const MODES = {
   FULL: 'Full'
 };
 
-const DATA_DIR = path.join(__dirname, 'data');
+const DATA_DIR = process.env.DATA_DIR || (process.env.VERCEL ? '/tmp/data' : path.join(__dirname, 'data'));
 const SAMPLING_FILE = path.join(DATA_DIR, 'sampling-plans.json');
 const IMPORTS_FILE = path.join(DATA_DIR, 'import-history.json');
 const CURRENT_IMPORT_FILE = path.join(DATA_DIR, 'current-import.json');
+
+let dbReady = false;
+let coreDbReady = false;
+let pool = null;
+
+async function initDb() {
+  if (dbReady || !process.env.POSTGRES_URL) return;
+  await sql`
+    CREATE TABLE IF NOT EXISTS sampling_plans (
+      id TEXT PRIMARY KEY,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      data JSONB NOT NULL
+    );
+  `;
+  await sql`
+    CREATE TABLE IF NOT EXISTS import_history (
+      id TEXT PRIMARY KEY,
+      uploaded_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      data JSONB NOT NULL
+    );
+  `;
+  await sql`
+    CREATE TABLE IF NOT EXISTS current_import (
+      id TEXT PRIMARY KEY,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      data JSONB NOT NULL
+    );
+  `;
+  dbReady = true;
+}
+
+function dbAvailable() {
+  return Boolean(process.env.POSTGRES_URL);
+}
+
+function coreDbAvailable() {
+  return Boolean(process.env.DATABASE_URL || process.env.PGHOST);
+}
+
+function getPool() {
+  if (!pool) {
+    const connectionString = process.env.DATABASE_URL;
+    pool = new Pool(
+      connectionString
+        ? { connectionString }
+        : {
+            host: process.env.PGHOST,
+            port: process.env.PGPORT ? Number(process.env.PGPORT) : 5432,
+            user: process.env.PGUSER,
+            password: process.env.PGPASSWORD,
+            database: process.env.PGDATABASE
+          }
+    );
+  }
+  return pool;
+}
+
+async function initCoreDb() {
+  if (coreDbReady || !coreDbAvailable()) return;
+  const db = getPool();
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS batches (
+      id BIGSERIAL PRIMARY KEY,
+      site_name TEXT NOT NULL,
+      crop_type TEXT NOT NULL,
+      batch_name TEXT,
+      start_date DATE,
+      structure_code TEXT NOT NULL,
+      mode TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS plots (
+      id BIGSERIAL PRIMARY KEY,
+      batch_id BIGINT NOT NULL REFERENCES batches(id) ON DELETE CASCADE,
+      plot_no INTEGER NOT NULL,
+      row_count INTEGER DEFAULT 0,
+      plant_count INTEGER DEFAULT 0,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (batch_id, plot_no)
+    );
+  `);
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS rows (
+      id BIGSERIAL PRIMARY KEY,
+      plot_id BIGINT NOT NULL REFERENCES plots(id) ON DELETE CASCADE,
+      row_no INTEGER NOT NULL,
+      plant_count INTEGER DEFAULT 0,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (plot_id, row_no)
+    );
+  `);
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS plants (
+      id BIGSERIAL PRIMARY KEY,
+      plot_id BIGINT NOT NULL REFERENCES plots(id) ON DELETE CASCADE,
+      row_id BIGINT REFERENCES rows(id) ON DELETE SET NULL,
+      plant_no INTEGER NOT NULL,
+      tracking_reason TEXT,
+      sampling_plan_id TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (plot_id, row_id, plant_no)
+    );
+  `);
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS events (
+      id BIGSERIAL PRIMARY KEY,
+      entity_type TEXT NOT NULL,
+      entity_id BIGINT NOT NULL,
+      event_type TEXT NOT NULL,
+      payload JSONB,
+      created_by TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
+  coreDbReady = true;
+}
 
 function mmToPt(mm) {
   return (mm * 72) / 25.4;
@@ -86,7 +210,12 @@ function ensureDataDir() {
   }
 }
 
-function loadSamplingPlans() {
+async function loadSamplingPlans() {
+  if (dbAvailable()) {
+    await initDb();
+    const { rows } = await sql`SELECT data FROM sampling_plans ORDER BY created_at DESC`;
+    return rows.map((row) => row.data);
+  }
   try {
     if (!fs.existsSync(SAMPLING_FILE)) return [];
     const raw = fs.readFileSync(SAMPLING_FILE, 'utf-8');
@@ -97,14 +226,24 @@ function loadSamplingPlans() {
   }
 }
 
-function saveSamplingPlan(plan) {
+async function saveSamplingPlan(plan) {
+  if (dbAvailable()) {
+    await initDb();
+    await sql`INSERT INTO sampling_plans (id, data) VALUES (${plan.id}, ${JSON.stringify(plan)}::jsonb)`;
+    return;
+  }
   ensureDataDir();
-  const plans = loadSamplingPlans();
+  const plans = await loadSamplingPlans();
   plans.push(plan);
   fs.writeFileSync(SAMPLING_FILE, JSON.stringify(plans, null, 2));
 }
 
-function loadImportHistory() {
+async function loadImportHistory() {
+  if (dbAvailable()) {
+    await initDb();
+    const { rows } = await sql`SELECT data FROM import_history ORDER BY uploaded_at DESC LIMIT 5`;
+    return rows.map((row) => row.data);
+  }
   try {
     if (!fs.existsSync(IMPORTS_FILE)) return [];
     const raw = fs.readFileSync(IMPORTS_FILE, 'utf-8');
@@ -115,15 +254,37 @@ function loadImportHistory() {
   }
 }
 
-function saveImportHistory(record) {
+async function saveImportHistory(record) {
+  if (dbAvailable()) {
+    await initDb();
+    await sql`INSERT INTO import_history (id, data) VALUES (${record.id}, ${JSON.stringify(record)}::jsonb)`;
+    await sql`
+      DELETE FROM import_history
+      WHERE id IN (
+        SELECT id FROM import_history
+        ORDER BY uploaded_at DESC
+        OFFSET 5
+      );
+    `;
+    return;
+  }
   ensureDataDir();
-  const history = loadImportHistory();
+  const history = await loadImportHistory();
   history.unshift(record);
   const trimmed = history.slice(0, 5);
   fs.writeFileSync(IMPORTS_FILE, JSON.stringify(trimmed, null, 2));
 }
 
-function saveCurrentImport(data) {
+async function saveCurrentImport(data) {
+  if (dbAvailable()) {
+    await initDb();
+    await sql`
+      INSERT INTO current_import (id, data, updated_at)
+      VALUES ('current', ${JSON.stringify(data)}::jsonb, NOW())
+      ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW();
+    `;
+    return;
+  }
   ensureDataDir();
   fs.writeFileSync(CURRENT_IMPORT_FILE, JSON.stringify(data, null, 2));
 }
@@ -1005,11 +1166,12 @@ app.get('/api/import-template', (_req, res) => {
   res.send(buffer);
 });
 
-app.get('/api/imports', (_req, res) => {
-  res.json({ history: loadImportHistory() });
+app.get('/api/imports', async (_req, res) => {
+  const history = await loadImportHistory();
+  res.json({ history });
 });
 
-app.post('/api/import', upload.single('file'), (req, res) => {
+app.post('/api/import', upload.single('file'), async (req, res) => {
   if (!req.file) {
     return res.status(400).json({ errors: ['Excel file is required.'], warnings: [] });
   }
@@ -1027,8 +1189,8 @@ app.post('/api/import', upload.single('file'), (req, res) => {
     cropType: parsed.data.cropType,
     counts: parsed.counts
   };
-  saveImportHistory(record);
-  saveCurrentImport({
+  await saveImportHistory(record);
+  await saveCurrentImport({
     ...parsed.data,
     structureCode: 'S3',
     mode: MODES.STANDARD,
@@ -1319,7 +1481,436 @@ app.get('/api/presets', (_req, res) => {
   res.json({ paperPresets: PAPER_PRESETS, defaults: DEFAULT_LAYOUT });
 });
 
-app.post('/api/sample', (req, res) => {
+app.post('/api/batches', async (req, res) => {
+  if (!coreDbAvailable()) {
+    return res.status(400).json({ errors: ['Database is not configured.'], warnings: [] });
+  }
+  const siteName = String(req.body.siteName || '').trim();
+  const cropType = String(req.body.cropType || '').trim();
+  const batchName = String(req.body.batchName || '').trim();
+  const startDate = req.body.startDate ? String(req.body.startDate).trim() : null;
+  const structureCode = String(req.body.structureCode || 'S3').toUpperCase();
+  const mode = String(req.body.mode || MODES.STANDARD);
+
+  const errors = [];
+  if (!siteName) errors.push('Site name is required.');
+  if (!cropType) errors.push('Crop type is required.');
+  if (!STRUCTURES[structureCode]) errors.push('Tracking structure is invalid.');
+  if (![MODES.STANDARD, MODES.RESEARCH, MODES.FULL].includes(mode)) errors.push('Tracking mode is invalid.');
+  if (errors.length) return res.status(400).json({ errors, warnings: [] });
+
+  try {
+    await initCoreDb();
+    const db = getPool();
+    const result = await db.query(
+      `INSERT INTO batches (site_name, crop_type, batch_name, start_date, structure_code, mode)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING *`,
+      [siteName, cropType, batchName || null, startDate || null, structureCode, mode]
+    );
+    res.json({ batch: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ errors: ['Failed to create batch.'], warnings: [] });
+  }
+});
+
+app.get('/api/batches', async (_req, res) => {
+  if (!coreDbAvailable()) {
+    return res.json({ batches: [] });
+  }
+  try {
+    await initCoreDb();
+    const db = getPool();
+    const { rows } = await db.query('SELECT * FROM batches ORDER BY created_at DESC');
+    res.json({ batches: rows });
+  } catch (error) {
+    res.status(500).json({ errors: ['Failed to load batches.'], warnings: [] });
+  }
+});
+
+app.get('/api/batches/:id', async (req, res) => {
+  if (!coreDbAvailable()) {
+    return res.status(400).json({ errors: ['Database is not configured.'], warnings: [] });
+  }
+  try {
+    await initCoreDb();
+    const db = getPool();
+    const batchId = Number(req.params.id);
+    const batchResult = await db.query('SELECT * FROM batches WHERE id = $1', [batchId]);
+    if (!batchResult.rows.length) {
+      return res.status(404).json({ errors: ['Batch not found.'], warnings: [] });
+    }
+    const plots = await db.query('SELECT * FROM plots WHERE batch_id = $1 ORDER BY plot_no', [batchId]);
+    const rows = await db.query(
+      `SELECT rows.* FROM rows
+       JOIN plots ON rows.plot_id = plots.id
+       WHERE plots.batch_id = $1
+       ORDER BY plots.plot_no, rows.row_no`,
+      [batchId]
+    );
+    res.json({ batch: batchResult.rows[0], plots: plots.rows, rows: rows.rows });
+  } catch (error) {
+    res.status(500).json({ errors: ['Failed to load batch.'], warnings: [] });
+  }
+});
+
+app.post('/api/batches/:id/structure', async (req, res) => {
+  if (!coreDbAvailable()) {
+    return res.status(400).json({ errors: ['Database is not configured.'], warnings: [] });
+  }
+  const batchId = Number(req.params.id);
+  const plots = Array.isArray(req.body.plots) ? req.body.plots : [];
+  if (!plots.length) {
+    return res.status(400).json({ errors: ['Plots are required.'], warnings: [] });
+  }
+  try {
+    await initCoreDb();
+    const db = getPool();
+    const batchResult = await db.query('SELECT * FROM batches WHERE id = $1', [batchId]);
+    if (!batchResult.rows.length) {
+      return res.status(404).json({ errors: ['Batch not found.'], warnings: [] });
+    }
+    const structureCode = batchResult.rows[0].structure_code;
+    const structure = getStructure(structureCode);
+
+    await db.query('BEGIN');
+    await db.query('DELETE FROM plots WHERE batch_id = $1', [batchId]);
+
+    for (const plot of plots) {
+      const plotNo = parsePositiveInt(plot.plot_no ?? plot.plotNo ?? plot.plot);
+      if (!plotNo) continue;
+      let rowCount = 0;
+      let plantCount = 0;
+
+      if (!structure.hasRows && structure.hasPlants) {
+        plantCount = parsePositiveInt(plot.plant_count ?? plot.plantCount ?? plot.plants) || 0;
+      }
+
+      if (structure.hasRows) {
+        const rows = Array.isArray(plot.rows) ? plot.rows : [];
+        rowCount = rows.length;
+        rows.forEach((row) => {
+          plantCount += parsePositiveInt(row.plant_count ?? row.plantCount ?? row.plants) || 0;
+        });
+      }
+
+      const plotResult = await db.query(
+        `INSERT INTO plots (batch_id, plot_no, row_count, plant_count)
+         VALUES ($1, $2, $3, $4)
+         RETURNING id`,
+        [batchId, plotNo, rowCount, plantCount]
+      );
+      const plotId = plotResult.rows[0].id;
+
+      if (structure.hasRows) {
+        const rows = Array.isArray(plot.rows) ? plot.rows : [];
+        for (const row of rows) {
+          const rowNo = parsePositiveInt(row.row_no ?? row.rowNo ?? row.row);
+          const rowPlantCount = parsePositiveInt(row.plant_count ?? row.plantCount ?? row.plants) || 0;
+          if (!rowNo) continue;
+          await db.query(
+            `INSERT INTO rows (plot_id, row_no, plant_count)
+             VALUES ($1, $2, $3)`,
+            [plotId, rowNo, rowPlantCount]
+          );
+        }
+      }
+    }
+
+    await db.query('COMMIT');
+    res.json({ ok: true });
+  } catch (error) {
+    try {
+      const db = getPool();
+      await db.query('ROLLBACK');
+    } catch (rollbackError) {
+      // ignore rollback errors
+    }
+    res.status(500).json({ errors: ['Failed to save structure.'], warnings: [] });
+  }
+});
+
+app.post('/api/batches/:id/plants', async (req, res) => {
+  if (!coreDbAvailable()) {
+    return res.status(400).json({ errors: ['Database is not configured.'], warnings: [] });
+  }
+  const batchId = Number(req.params.id);
+  const plants = Array.isArray(req.body.plants) ? req.body.plants : [];
+  if (!plants.length) {
+    return res.status(400).json({ errors: ['Plant list is required.'], warnings: [] });
+  }
+  try {
+    await initCoreDb();
+    const db = getPool();
+    const plots = await db.query('SELECT id, plot_no FROM plots WHERE batch_id = $1', [batchId]);
+    const plotMap = new Map(plots.rows.map((plot) => [plot.plot_no, plot.id]));
+    const rows = await db.query(
+      `SELECT rows.id, rows.row_no, plots.plot_no
+       FROM rows
+       JOIN plots ON rows.plot_id = plots.id
+       WHERE plots.batch_id = $1`,
+      [batchId]
+    );
+    const rowMap = new Map(rows.rows.map((row) => [`${row.plot_no}-${row.row_no}`, row.id]));
+
+    await db.query('BEGIN');
+    for (const plant of plants) {
+      const plotNo = parsePositiveInt(plant.plot_no ?? plant.plotNo ?? plant.plot);
+      const rowNo = parsePositiveInt(plant.row_no ?? plant.rowNo ?? plant.row);
+      const plantNo = parsePositiveInt(plant.plant_no ?? plant.plantNo ?? plant.plant);
+      if (!plotNo || !plantNo) continue;
+      const plotId = plotMap.get(plotNo);
+      if (!plotId) continue;
+      const rowId = rowNo ? rowMap.get(`${plotNo}-${rowNo}`) : null;
+      await db.query(
+        `INSERT INTO plants (plot_id, row_id, plant_no, tracking_reason, sampling_plan_id)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (plot_id, row_id, plant_no) DO NOTHING`,
+        [plotId, rowId, plantNo, plant.tracking_reason || null, plant.sampling_plan_id || null]
+      );
+    }
+    await db.query('COMMIT');
+    res.json({ ok: true });
+  } catch (error) {
+    try {
+      const db = getPool();
+      await db.query('ROLLBACK');
+    } catch (rollbackError) {
+      // ignore
+    }
+    res.status(500).json({ errors: ['Failed to save plants.'], warnings: [] });
+  }
+});
+
+app.get('/api/plot/:id', async (req, res) => {
+  if (!coreDbAvailable()) return res.status(400).json({ errors: ['Database not configured.'], warnings: [] });
+  try {
+    await initCoreDb();
+    const db = getPool();
+    const plotId = Number(req.params.id);
+    const result = await db.query(
+      `SELECT plots.*, batches.site_name, batches.crop_type
+       FROM plots
+       JOIN batches ON plots.batch_id = batches.id
+       WHERE plots.id = $1`,
+      [plotId]
+    );
+    if (!result.rows.length) return res.status(404).json({ errors: ['Plot not found.'], warnings: [] });
+    res.json({ plot: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ errors: ['Failed to load plot.'], warnings: [] });
+  }
+});
+
+app.get('/api/row/:id', async (req, res) => {
+  if (!coreDbAvailable()) return res.status(400).json({ errors: ['Database not configured.'], warnings: [] });
+  try {
+    await initCoreDb();
+    const db = getPool();
+    const rowId = Number(req.params.id);
+    const result = await db.query(
+      `SELECT rows.*, plots.plot_no, batches.site_name, batches.crop_type
+       FROM rows
+       JOIN plots ON rows.plot_id = plots.id
+       JOIN batches ON plots.batch_id = batches.id
+       WHERE rows.id = $1`,
+      [rowId]
+    );
+    if (!result.rows.length) return res.status(404).json({ errors: ['Row not found.'], warnings: [] });
+    res.json({ row: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ errors: ['Failed to load row.'], warnings: [] });
+  }
+});
+
+app.get('/api/plant/:id', async (req, res) => {
+  if (!coreDbAvailable()) return res.status(400).json({ errors: ['Database not configured.'], warnings: [] });
+  try {
+    await initCoreDb();
+    const db = getPool();
+    const plantId = Number(req.params.id);
+    const result = await db.query(
+      `SELECT plants.*, plots.plot_no, rows.row_no, batches.site_name, batches.crop_type
+       FROM plants
+       JOIN plots ON plants.plot_id = plots.id
+       LEFT JOIN rows ON plants.row_id = rows.id
+       JOIN batches ON plots.batch_id = batches.id
+       WHERE plants.id = $1`,
+      [plantId]
+    );
+    if (!result.rows.length) return res.status(404).json({ errors: ['Plant not found.'], warnings: [] });
+    res.json({ plant: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ errors: ['Failed to load plant.'], warnings: [] });
+  }
+});
+
+app.post('/api/events', async (req, res) => {
+  if (!coreDbAvailable()) return res.status(400).json({ errors: ['Database not configured.'], warnings: [] });
+  const entityType = String(req.body.entityType || '').toLowerCase();
+  const entityId = Number(req.body.entityId);
+  const eventType = String(req.body.eventType || '').trim();
+  const payload = req.body.payload || null;
+  const createdBy = req.body.createdBy || null;
+  if (!['plot', 'row', 'plant'].includes(entityType)) {
+    return res.status(400).json({ errors: ['entityType must be plot, row, or plant.'], warnings: [] });
+  }
+  if (!entityId || !eventType) {
+    return res.status(400).json({ errors: ['entityId and eventType are required.'], warnings: [] });
+  }
+  try {
+    await initCoreDb();
+    const db = getPool();
+    const result = await db.query(
+      `INSERT INTO events (entity_type, entity_id, event_type, payload, created_by)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING *`,
+      [entityType, entityId, eventType, payload, createdBy]
+    );
+    res.json({ event: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ errors: ['Failed to log event.'], warnings: [] });
+  }
+});
+
+app.get('/api/events', async (req, res) => {
+  if (!coreDbAvailable()) return res.status(400).json({ errors: ['Database not configured.'], warnings: [] });
+  const entityType = String(req.query.entity_type || '').toLowerCase();
+  const entityId = Number(req.query.entity_id);
+  if (!entityType || !entityId) {
+    return res.status(400).json({ errors: ['entity_type and entity_id are required.'], warnings: [] });
+  }
+  try {
+    await initCoreDb();
+    const db = getPool();
+    const result = await db.query(
+      `SELECT * FROM events
+       WHERE entity_type = $1 AND entity_id = $2
+       ORDER BY created_at DESC`,
+      [entityType, entityId]
+    );
+    res.json({ events: result.rows });
+  } catch (error) {
+    res.status(500).json({ errors: ['Failed to load events.'], warnings: [] });
+  }
+});
+
+function renderPageShell(title, bodyHtml) {
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>${title}</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 0; background: #f7f2ec; color: #111; }
+    .card { max-width: 720px; margin: 24px auto; background: #fff; border-radius: 16px; padding: 20px; box-shadow: 0 10px 30px rgba(0,0,0,0.08); }
+    h1 { font-size: 22px; margin: 0 0 8px; }
+    .meta { color: #555; margin-bottom: 12px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; }
+    .label { font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: #666; }
+    .value { font-size: 16px; font-weight: 600; }
+    .actions { margin-top: 16px; display: flex; gap: 10px; flex-wrap: wrap; }
+    button { border: none; border-radius: 999px; padding: 10px 16px; background: #f26b3a; color: #fff; font-size: 14px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    ${bodyHtml}
+  </div>
+</body>
+</html>`;
+}
+
+app.get('/p/:plotId', async (req, res) => {
+  if (!coreDbAvailable()) return res.status(400).send('Database not configured.');
+  try {
+    await initCoreDb();
+    const db = getPool();
+    const plotId = Number(req.params.plotId);
+    const result = await db.query(
+      `SELECT plots.*, batches.site_name, batches.crop_type
+       FROM plots
+       JOIN batches ON plots.batch_id = batches.id
+       WHERE plots.id = $1`,
+      [plotId]
+    );
+    if (!result.rows.length) return res.status(404).send('Plot not found.');
+    const plot = result.rows[0];
+    const body = `
+      <h1>Plot ${pad(plot.plot_no, 2)}</h1>
+      <div class="meta">${plot.site_name} · ${plot.crop_type}</div>
+      <div class="grid">
+        <div><div class="label">Rows</div><div class="value">${plot.row_count}</div></div>
+        <div><div class="label">Plants</div><div class="value">${plot.plant_count}</div></div>
+      </div>
+    `;
+    res.send(renderPageShell(`Plot ${plot.plot_no}`, body));
+  } catch (error) {
+    res.status(500).send('Failed to load plot.');
+  }
+});
+
+app.get('/r/:rowId', async (req, res) => {
+  if (!coreDbAvailable()) return res.status(400).send('Database not configured.');
+  try {
+    await initCoreDb();
+    const db = getPool();
+    const rowId = Number(req.params.rowId);
+    const result = await db.query(
+      `SELECT rows.*, plots.plot_no, batches.site_name, batches.crop_type
+       FROM rows
+       JOIN plots ON rows.plot_id = plots.id
+       JOIN batches ON plots.batch_id = batches.id
+       WHERE rows.id = $1`,
+      [rowId]
+    );
+    if (!result.rows.length) return res.status(404).send('Row not found.');
+    const row = result.rows[0];
+    const body = `
+      <h1>Row ${pad(row.row_no, 2)}</h1>
+      <div class="meta">${row.site_name} · ${row.crop_type} · Plot ${pad(row.plot_no, 2)}</div>
+      <div class="grid">
+        <div><div class="label">Plants</div><div class="value">${row.plant_count}</div></div>
+      </div>
+    `;
+    res.send(renderPageShell(`Row ${row.row_no}`, body));
+  } catch (error) {
+    res.status(500).send('Failed to load row.');
+  }
+});
+
+app.get('/t/:plantId', async (req, res) => {
+  if (!coreDbAvailable()) return res.status(400).send('Database not configured.');
+  try {
+    await initCoreDb();
+    const db = getPool();
+    const plantId = Number(req.params.plantId);
+    const result = await db.query(
+      `SELECT plants.*, plots.plot_no, rows.row_no, batches.site_name, batches.crop_type
+       FROM plants
+       JOIN plots ON plants.plot_id = plots.id
+       LEFT JOIN rows ON plants.row_id = rows.id
+       JOIN batches ON plots.batch_id = batches.id
+       WHERE plants.id = $1`,
+      [plantId]
+    );
+    if (!result.rows.length) return res.status(404).send('Plant not found.');
+    const plant = result.rows[0];
+    const body = `
+      <h1>Plant ${pad(plant.plant_no, 3)}</h1>
+      <div class="meta">${plant.site_name} · ${plant.crop_type} · Plot ${pad(plant.plot_no, 2)}${plant.row_no ? ` · Row ${pad(plant.row_no, 2)}` : ''}</div>
+      <div class="grid">
+        <div><div class="label">Tracking</div><div class="value">${plant.tracking_reason || 'N/A'}</div></div>
+      </div>
+    `;
+    res.send(renderPageShell(`Plant ${plant.plant_no}`, body));
+  } catch (error) {
+    res.status(500).send('Failed to load plant.');
+  }
+});
+
+app.post('/api/sample', async (req, res) => {
   const validation = validatePayload(req.body || {});
   if (!validation.ok) {
     return res.status(400).json({ errors: validation.errors, warnings: validation.warnings });
@@ -1347,7 +1938,7 @@ app.post('/api/sample', (req, res) => {
       config: planConfig,
       trackedPlants: planResult.trackedPlants
     };
-    saveSamplingPlan(planRecord);
+    await saveSamplingPlan(planRecord);
     res.json({
       samplingPlanId: planId,
       seed: planResult.seed,
